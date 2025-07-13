@@ -1,1 +1,306 @@
 app/screens/settings/ProfileScreen.js
+
+import React, { useState, useEffect } from 'react';
+import { View, ScrollView, Alert, ActivityIndicator, Image } from 'react-native';
+import { Button, TextInput, Avatar, Card, Title, Paragraph, Snackbar, HelperText } from 'react-native-paper';
+import * as ImagePicker from 'expo-image-picker';
+import { launchImageLibraryAsync, MediaTypeOptions } from 'expo-image-picker';
+import { useTailwind } from 'tailwind-rn';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+const ProfileScreen = () => {
+  const tailwind = useTailwind();
+  const { user } = useAuth();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [profile, setProfile] = useState({
+    full_name: '',
+    avatar_url: '',
+    email: '',
+    phone: '',
+    company: '',
+    position: '',
+  });
+  const [errors, setErrors] = useState({});
+  const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
+  const [avatarChanged, setAvatarChanged] = useState(false);
+
+  // Fetch user profile
+  const fetchProfile = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('full_name, avatar_url, email, phone, company, position')
+        .eq('id', user.id)
+        .single();
+
+      if (error) throw error;
+
+      if (data) {
+        setProfile({
+          full_name: data.full_name || '',
+          avatar_url: data.avatar_url || '',
+          email: data.email || user.email || '',
+          phone: data.phone || '',
+          company: data.company || '',
+          position: data.position || '',
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching profile:', error);
+      showSnackbar('Failed to load profile');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchProfile();
+  }, [user]);
+
+  const showSnackbar = (message) => {
+    setSnackbarMessage(message);
+    setSnackbarVisible(true);
+  };
+
+  const validateForm = () => {
+    const newErrors = {};
+    
+    if (!profile.full_name.trim()) {
+      newErrors.full_name = 'Full name is required';
+    }
+    
+    if (profile.phone && !/^\+?[0-9\s()-]{7,15}$/.test(profile.phone)) {
+      newErrors.phone = 'Invalid phone number format';
+    }
+    
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleUpdateProfile = async () => {
+    if (!validateForm()) return;
+
+    try {
+      setSaving(true);
+      
+      const updates = {
+        id: user.id,
+        full_name: profile.full_name,
+        phone: profile.phone,
+        company: profile.company,
+        position: profile.position,
+        updated_at: new Date().toISOString(),
+      };
+
+      // Upload avatar if changed
+      if (avatarChanged && profile.avatar_url) {
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('avatars')
+          .upload(`${user.id}/${Date.now()}.jpg`, {
+            uri: profile.avatar_url,
+            contentType: 'image/jpeg',
+          }, {
+            cacheControl: '3600',
+            upsert: true,
+          });
+
+        if (uploadError) throw uploadError;
+
+        updates.avatar_url = supabase.storage
+          .from('avatars')
+          .getPublicUrl(uploadData.path).data.publicUrl;
+      }
+
+      const { error } = await supabase
+        .from('profiles')
+        .upsert(updates, { returning: 'minimal' });
+
+      if (error) throw error;
+
+      showSnackbar('Profile updated successfully');
+      setAvatarChanged(false);
+    } catch (error) {
+      console.error('Error updating profile:', error);
+      showSnackbar('Failed to update profile');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const pickImage = async () => {
+    try {
+      const result = await launchImageLibraryAsync({
+        mediaTypes: MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+
+      if (!result.canceled) {
+        setProfile({ ...profile, avatar_url: result.assets[0].uri });
+        setAvatarChanged(true);
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      showSnackbar('Failed to select image');
+    }
+  };
+
+  const handleChange = (field, value) => {
+    setProfile({ ...profile, [field]: value });
+    if (errors[field]) {
+      setErrors({ ...errors, [field]: null });
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={tailwind('flex-1 justify-center items-center')}>
+        <ActivityIndicator size="large" />
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={tailwind('flex-1 bg-gray-50')}>
+      <ScrollView contentContainerStyle={tailwind('p-4')}>
+        <Card style={tailwind('mb-6')}>
+          <Card.Content style={tailwind('items-center')}>
+            <View style={tailwind('mb-4')}>
+              {profile.avatar_url ? (
+                <Avatar.Image 
+                  size={120} 
+                  source={{ uri: profile.avatar_url }} 
+                  style={tailwind('bg-gray-200')}
+                />
+              ) : (
+                <Avatar.Text 
+                  size={120} 
+                  label={profile.full_name ? profile.full_name.charAt(0) : 'U'} 
+                  style={tailwind('bg-blue-500')}
+                />
+              )}
+              <Button 
+                mode="text" 
+                onPress={pickImage}
+                style={tailwind('mt-2')}
+              >
+                Change Photo
+              </Button>
+            </View>
+            
+            <Title style={tailwind('text-xl font-bold mb-1')}>
+              {profile.full_name || 'Your Name'}
+            </Title>
+            <Paragraph style={tailwind('text-gray-600 mb-4')}>
+              {profile.position} {profile.company && `at ${profile.company}`}
+            </Paragraph>
+          </Card.Content>
+        </Card>
+
+        <Card style={tailwind('mb-6')}>
+          <Card.Content>
+            <Title style={tailwind('text-lg font-bold mb-4')}>
+              Personal Information
+            </Title>
+            
+            <TextInput
+              label="Full Name"
+              value={profile.full_name}
+              onChangeText={(text) => handleChange('full_name', text)}
+              style={tailwind('mb-4')}
+              error={!!errors.full_name}
+              mode="outlined"
+              disabled={saving}
+            />
+            {errors.full_name && (
+              <HelperText type="error" visible={!!errors.full_name}>
+                {errors.full_name}
+              </HelperText>
+            )}
+            
+            <TextInput
+              label="Email"
+              value={profile.email}
+              style={tailwind('mb-4')}
+              mode="outlined"
+              disabled
+            />
+            
+            <TextInput
+              label="Phone"
+              value={profile.phone}
+              onChangeText={(text) => handleChange('phone', text)}
+              style={tailwind('mb-4')}
+              keyboardType="phone-pad"
+              error={!!errors.phone}
+              mode="outlined"
+              disabled={saving}
+            />
+            {errors.phone && (
+              <HelperText type="error" visible={!!errors.phone}>
+                {errors.phone}
+              </HelperText>
+            )}
+          </Card.Content>
+        </Card>
+
+        <Card style={tailwind('mb-6')}>
+          <Card.Content>
+            <Title style={tailwind('text-lg font-bold mb-4')}>
+              Professional Information
+            </Title>
+            
+            <TextInput
+              label="Company"
+              value={profile.company}
+              onChangeText={(text) => handleChange('company', text)}
+              style={tailwind('mb-4')}
+              mode="outlined"
+              disabled={saving}
+            />
+            
+            <TextInput
+              label="Position"
+              value={profile.position}
+              onChangeText={(text) => handleChange('position', text)}
+              style={tailwind('mb-4')}
+              mode="outlined"
+              disabled={saving}
+            />
+          </Card.Content>
+        </Card>
+
+        <Button
+          mode="contained"
+          onPress={handleUpdateProfile}
+          loading={saving}
+          disabled={saving}
+          style={tailwind('py-2 rounded-lg')}
+          contentStyle={tailwind('h-12')}
+        >
+          {saving ? 'Saving...' : 'Save Changes'}
+        </Button>
+      </ScrollView>
+
+      <Snackbar
+        visible={snackbarVisible}
+        onDismiss={() => setSnackbarVisible(false)}
+        duration={3000}
+        action={{
+          label: 'OK',
+          onPress: () => setSnackbarVisible(false),
+        }}
+      >
+        {snackbarMessage}
+      </Snackbar>
+    </SafeAreaView>
+  );
+};
+
+export default ProfileScreen;
